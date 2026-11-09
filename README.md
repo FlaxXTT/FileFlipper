@@ -1,3 +1,24 @@
+<p align="center">
+  <img src="Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png" width="168" alt="Proteus 图标">
+</p>
+
+<h1 align="center">Proteus</h1>
+
+<p align="center">macOS 本地文件转换工具</p>
+
+<p align="center">
+  <a href="https://github.com/FlaxXTT/FileFlipper/releases/latest">下载 Proteus</a>
+  ·
+  <a href="LOCAL_CHANGES.md">版本说明</a>
+</p>
+
+在 Finder 中拖动文件并按住 Shift，即可选择转换格式；按住 Option + Shift 可以使用裁剪、压缩等工具。文件在本机处理，应用不提供自动更新。
+
+PDF 转 DOCX 有两种方式：**DOCX** 将每页作为图片保留版面；**DOCX 文字** 导出可编辑文字，但不保留原图片和版面。需要 macOS 14 或更高版本。
+
+<details>
+<summary>上游 FileFlipper 项目资料</summary>
+
 > 本 fork 的 macOS 版本名为 **Proteus**，当前版本为 **1.5.3**。它在本地处理文件，不提供自动更新；沙盒未授予网络权限。下载请前往本仓库的 Releases。
 >
 > PDF 转 DOCX 提供两种方式：**DOCX** 将每页作为图片保留版面；**DOCX 文字** 导出可编辑文字，但不保留图片和版面。需要 macOS 14 或更高版本。
@@ -642,3 +663,5 @@ Publishing to the Mac App Store: [APP_STORE.md](APP_STORE.md) · Privacy policy:
 **欢迎二次开发。** 你可以免费使用、修改、二次开发、再发布 FileFlipper 的代码，也可以用在商业项目里，只需要在你的项目中保留原来的版权声明和 LICENSE 文件。欢迎 Fork，也欢迎提交 Pull Request 或在 Issues 里提建议。
 
 **Forks and derivative works are welcome.** You may use, modify, redistribute and build on this code, including commercially, as long as you keep the copyright notice and the LICENSE file. Pull requests and issues are welcome too.
+
+</details>
