@@ -2,7 +2,7 @@ import AppKit
 
 /// The Mac App Store requires the App Sandbox. A sandboxed app may read files that are
 /// dropped on it, but may not create new files next to them unless the user has granted
-/// access to that folder. FileFlipper asks once per folder (the user can pick their whole
+/// access to that folder. Proteus asks once per folder (the user can pick their whole
 /// Home folder to never be asked again) and remembers the answer as a security-scoped bookmark.
 ///
 /// Outside the sandbox (e.g. `swift run`) every call is a no-op.
@@ -36,13 +36,19 @@ final class FolderAccess {
         var active: [URL] = []
         let stopAll = { active.forEach { $0.stopAccessingSecurityScopedResource() } }
         for directory in Set(directories.map { $0.standardizedFileURL }) {
-            guard let grant = covering(directory) ?? requestAccess(to: directory) else {
+            var grant = covering(directory)
+            if let existing = grant, existing.startAccessingSecurityScopedResource() {
+                active.append(existing)
+                continue
+            }
+            // An old bookmark can resolve while its permission no longer works.
+            grantedFolders.removeAll { $0.standardizedFileURL == grant?.standardizedFileURL }
+            grant = requestAccess(to: directory)
+            guard let granted = grant, granted.startAccessingSecurityScopedResource() else {
                 stopAll()
                 return nil
             }
-            if grant.startAccessingSecurityScopedResource() {
-                active.append(grant)
-            }
+            active.append(granted)
         }
         return stopAll
     }
@@ -76,27 +82,45 @@ final class FolderAccess {
         panel.canCreateDirectories = false
         panel.directoryURL = directory
         panel.prompt = L("Grant Access")
-        panel.message = L("FileFlipper needs your permission to save converted files in “%@”. Tip: choose your Home folder to allow every folder inside it at once.", directory.lastPathComponent)
+        panel.message = L("Proteus needs your permission to save converted files in “%@”. Tip: choose your Home folder to allow every folder inside it at once.", directory.lastPathComponent)
         guard panel.runModal() == .OK, let chosen = panel.url else { return nil }
 
         do {
             let bookmark = try chosen.bookmarkData(options: .withSecurityScope,
                                                    includingResourceValuesForKeys: nil, relativeTo: nil)
             var bookmarks = UserDefaults.standard.array(forKey: defaultsKey) as? [Data] ?? []
+            bookmarks.removeAll { resolve($0)?.standardizedFileURL == chosen.standardizedFileURL }
             bookmarks.append(bookmark)
             UserDefaults.standard.set(bookmarks, forKey: defaultsKey)
-            if let resolved = resolve(bookmark) {
-                grantedFolders.append(resolved)
-            }
+            load()
         } catch {
-            NSLog("FileFlipper: couldn't save folder permission: \(error)")
+            NSLog("Proteus: couldn't save folder permission: \(error)")
         }
         return covering(directory)
     }
 
     private func load() {
         let bookmarks = UserDefaults.standard.array(forKey: defaultsKey) as? [Data] ?? []
-        grantedFolders = bookmarks.compactMap(resolve)
+        var refreshed: [Data] = []
+        var seen = Set<String>()
+        grantedFolders = []
+        for bookmark in bookmarks {
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) else {
+                // Keep bookmarks for volumes that are temporarily disconnected.
+                refreshed.append(bookmark)
+                continue
+            }
+            guard seen.insert(url.standardizedFileURL.path).inserted else { continue }
+            var saved = bookmark
+            if stale, url.startAccessingSecurityScopedResource() {
+                saved = (try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)) ?? bookmark
+                url.stopAccessingSecurityScopedResource()
+            }
+            refreshed.append(saved)
+            grantedFolders.append(url)
+        }
+        if refreshed != bookmarks { UserDefaults.standard.set(refreshed, forKey: defaultsKey) }
     }
 
     private func resolve(_ bookmark: Data) -> URL? {

@@ -11,6 +11,7 @@ import Vision
 /// lifting (the same feature as "Copy Subject" in Photos), which is trained on photos.
 enum BackgroundRemover {
     static func removeBackground(from image: CGImage, name: String) throws -> CGImage {
+        try ConversionWork.check()
         if let cutout = removeSolidBackground(image) {
             return cutout
         }
@@ -31,6 +32,7 @@ enum BackgroundRemover {
         let width = image.width, height = image.height
         guard width > 2, height > 2 else { return nil }
         let count = width * height
+        guard count <= 8_000_000 else { return nil }
         var pixels = [UInt8](repeating: 0, count: count * 4)
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
@@ -85,6 +87,7 @@ enum BackgroundRemover {
         }
         var head = 0
         while head < queue.count {
+            if head % 4096 == 0 && Task.isCancelled { return nil }
             let index = queue[head]
             head += 1
             forEachNeighbour(of: index, width: width, height: height) { next in
@@ -158,7 +161,10 @@ enum BackgroundRemover {
 
     // MARK: Photos
 
+    private static let imageContext = CIContext()
+
     private static func liftSubject(_ image: CGImage, name: String) throws -> CGImage {
+        try ConversionWork.check()
         let request = VNGenerateForegroundInstanceMaskRequest()
         let handler = VNImageRequestHandler(cgImage: image)
         try handler.perform([request])
@@ -167,8 +173,9 @@ enum BackgroundRemover {
         }
         let buffer = try result.generateMaskedImage(ofInstances: result.allInstances, from: handler,
                                                     croppedToInstancesExtent: false)
+        try ConversionWork.check()
         let ciImage = CIImage(cvPixelBuffer: buffer)
-        guard let cutout = CIContext().createCGImage(ciImage, from: ciImage.extent) else {
+        guard let cutout = imageContext.createCGImage(ciImage, from: ciImage.extent) else {
             throw ConversionError.message(L("Couldn't render the cutout"))
         }
         return cutout

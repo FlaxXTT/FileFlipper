@@ -14,9 +14,7 @@ enum SpreadsheetConverter {
 
     static func toPDF(_ url: URL) throws -> URL {
         let sheets = try read(url)
-        let output = OutputNaming.next(to: url, ext: "pdf")
-        try renderPDF(sheets, to: output)
-        return output
+        return try OutputNaming.withFile(nextTo: url, ext: "pdf") { try renderPDF(sheets, to: $0) }
     }
 
     static func toMarkdown(_ url: URL) throws -> URL {
@@ -27,9 +25,7 @@ enum SpreadsheetConverter {
                 .replacingOccurrences(of: "\n", with: " ") } }
             parts.append("## " + MarkdownWriter.escape(sheet.name) + "\n\n" + MarkdownWriter.table(rows))
         }
-        let output = OutputNaming.next(to: url, ext: "md")
-        try (parts.joined(separator: "\n\n") + "\n").write(to: output, atomically: true, encoding: .utf8)
-        return output
+        return try OutputNaming.withFile(nextTo: url, ext: "md") { try (parts.joined(separator: "\n\n") + "\n").write(to: $0, atomically: true, encoding: .utf8) }
     }
 
     // MARK: Reading
@@ -41,43 +37,59 @@ enum SpreadsheetConverter {
         let relationships = OfficePackage.relationships(archive, for: "xl/workbook.xml")
         let shared = sharedStrings(archive)
         let formats = cellFormats(archive)
-        let date1904 = workbook.child("workbookPr")?.attr("date1904") == "1"
+        let date1904 = ["1", "true"].contains(workbook.child("workbookPr")?.attr("date1904") ?? "")
 
         var sheets: [Sheet] = []
         for sheet in workbook.child("sheets")?.children("sheet") ?? [] {
+            try ConversionWork.check()
             if sheet.attr("state") == "hidden" || sheet.attr("state") == "veryHidden" { continue }
             guard let id = sheet.relationshipID, let path = relationships[id]?.target,
-                  let root = OfficePackage.xml(archive, path) else { continue }
+                  let root = OfficePackage.xml(archive, path) else { throw ConversionError.unreadable(url) }
             let name = sheet.attr("name") ?? "Sheet"
             var grid: [Int: [Int: (String, Bool)]] = [:]
             for row in root.child("sheetData")?.children("row") ?? [] {
+                try ConversionWork.check()
                 if row.attr("hidden") == "1" { continue }
                 for cell in row.children("c") {
                     guard let reference = cell.attr("r"), let (column, rowIndex) = position(reference) else { continue }
-                    let (text, numeric) = value(of: cell, shared: shared, formats: formats, date1904: date1904)
+                    let (text, numeric) = try value(of: cell, shared: shared, formats: formats, date1904: date1904)
                     if !text.isEmpty { grid[rowIndex, default: [:]][column] = (text, numeric) }
                 }
             }
-            guard let lastRow = grid.keys.max(), let firstRow = grid.keys.min() else { continue }
-            let columns = grid.values.flatMap(\.keys)
-            let firstColumn = columns.min() ?? 0, lastColumn = columns.max() ?? 0
+            guard !grid.isEmpty else { continue }
+            let rowIndices = grid.keys.sorted()
+            let columnIndices = Set(grid.values.flatMap(\.keys)).sorted()
             var rows: [[String]] = []
-            var numericCounts = [Int: Int](), totalCounts = [Int: Int]()
-            for r in firstRow...lastRow {
-                var line: [String] = []
-                for c in firstColumn...lastColumn {
-                    let entry = grid[r]?[c]
-                    line.append(entry?.0 ?? "")
-                    if let entry, r != firstRow {
-                        totalCounts[c - firstColumn, default: 0] += 1
-                        if entry.1 { numericCounts[c - firstColumn, default: 0] += 1 }
+            var numeric = Set<Int>()
+            // Keep original coordinates. Do not allocate the empty rectangle between cells.
+            if rowIndices.count > 100_000 / max(1, columnIndices.count) {
+                rows.append([L("Cell"), L("Value")])
+                for r in rowIndices {
+                    try ConversionWork.check()
+                    for c in grid[r]!.keys.sorted() {
+                        rows.append([columnName(c) + String(r + 1), grid[r]![c]!.0])
                     }
                 }
-                rows.append(line)
+            } else {
+                rows.append([L("Row")] + columnIndices.map(columnName))
+                var numericCounts: [Int: Int] = [:], totalCounts: [Int: Int] = [:]
+                for r in rowIndices {
+                    try ConversionWork.check()
+                    var line = [String(r + 1)]
+                    for (index, c) in columnIndices.enumerated() {
+                        let entry = grid[r]?[c]
+                        line.append(entry?.0 ?? "")
+                        if let entry {
+                            totalCounts[index + 1, default: 0] += 1
+                            if entry.1 { numericCounts[index + 1, default: 0] += 1 }
+                        }
+                    }
+                    rows.append(line)
+                }
+                numeric = Set(totalCounts.compactMap { column, total in
+                    (numericCounts[column] ?? 0) * 2 > total ? column : nil
+                })
             }
-            let numeric = Set(totalCounts.compactMap { column, total in
-                (numericCounts[column] ?? 0) * 2 > total ? column : nil
-            })
             sheets.append(Sheet(name: name, rows: rows, numericColumns: numeric))
         }
         guard !sheets.isEmpty else { throw ConversionError.message(L("%@ has no data", url.lastPathComponent)) }
@@ -92,7 +104,7 @@ enum SpreadsheetConverter {
         }
     }
 
-    private enum NumberStyle { case general, date(time: Bool), time, percent(decimals: Int), fixed(decimals: Int, grouping: Bool) }
+    private enum NumberStyle { case general, date(time: Bool), time(seconds: Bool), elapsed(unit: String, seconds: Bool), percent(decimals: Int), fixed(decimals: Int, grouping: Bool) }
 
     /// Number style for each cell style index (`s` attribute).
     private static func cellFormats(_ archive: ZipArchive) -> [NumberStyle] {
@@ -106,7 +118,9 @@ enum SpreadsheetConverter {
             switch id {
             case 14...17: return .date(time: false)
             case 22: return .date(time: true)
-            case 18...21, 45...47: return .time
+            case 18, 20: return .time(seconds: false)
+            case 19, 21, 45, 47: return .time(seconds: true)
+            case 46: return .elapsed(unit: "h", seconds: true)
             case 9: return .percent(decimals: 0)
             case 10: return .percent(decimals: 2)
             case 1: return .fixed(decimals: 0, grouping: false)
@@ -116,13 +130,15 @@ enum SpreadsheetConverter {
             default: break
             }
             guard let code = custom[id] else { return .general }
-            // Ignore quoted literals and colour/condition sections when sniffing the format.
-            let bare = code.replacingOccurrences(of: #""[^"]*""#, with: "", options: .regularExpression)
-                .replacingOccurrences(of: #"\[[^\]]*\]"#, with: "", options: .regularExpression).lowercased()
-            if bare.contains("y") || bare.contains("d") || (bare.contains("m") && !bare.contains("0")) {
-                return .date(time: bare.contains("h"))
+            let unquoted = code.components(separatedBy: ";").first!.replacingOccurrences(of: #""[^"]*""#, with: "", options: .regularExpression).lowercased()
+            if let range = unquoted.range(of: #"\[([hms])\1*\]"#, options: .regularExpression) {
+                let token = String(unquoted[range]).dropFirst().first!
+                return .elapsed(unit: String(token), seconds: unquoted.contains("s"))
             }
-            if bare.contains("h") || bare.contains("s") { return .time }
+            let bare = unquoted.replacingOccurrences(of: #"\[[^\]]*\]"#, with: "", options: .regularExpression)
+            if bare.contains("y") || bare.contains("d") { return .date(time: bare.contains("h")) }
+            if bare.contains("h") || bare.contains("s") { return .time(seconds: bare.contains("s")) }
+            if bare.contains("m") && !bare.contains("0") { return .date(time: false) }
             let decimals = bare.range(of: #"\.(0+)"#, options: .regularExpression).map { bare[$0].count - 1 } ?? 0
             if bare.contains("%") { return .percent(decimals: decimals) }
             if bare.contains("0") || bare.contains("#") { return .fixed(decimals: decimals, grouping: bare.contains(",")) }
@@ -131,8 +147,11 @@ enum SpreadsheetConverter {
     }
 
     private static func value(of cell: XMLElement, shared: [String], formats: [NumberStyle],
-                              date1904: Bool) -> (String, Bool) {
+                              date1904: Bool) throws -> (String, Bool) {
         let raw = cell.child("v")?.stringValue ?? ""
+        if cell.child("f") != nil && cell.child("v") == nil {
+            throw ConversionError.message(L("A formula has no saved value. Recalculate and save the spreadsheet first."))
+        }
         switch cell.attr("t") {
         case "s":
             return (Int(raw).flatMap { shared.indices.contains($0) ? shared[$0] : nil } ?? "", false)
@@ -147,6 +166,8 @@ enum SpreadsheetConverter {
         default:
             guard let number = Double(raw) else { return (raw, false) }
             let style = cell.attr("s").flatMap(Int.init).flatMap { formats.indices.contains($0) ? formats[$0] : nil } ?? .general
+            if case .general = style { return (raw, true) }
+            guard number.isFinite else { return (raw, false) }
             return (format(number, style, date1904: date1904), true)
         }
     }
@@ -160,9 +181,18 @@ enum SpreadsheetConverter {
             formatter.timeZone = TimeZone(identifier: "UTC")
             formatter.dateFormat = time ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd"
             return formatter.string(from: date)
-        case .time:
-            let seconds = Int((number.truncatingRemainder(dividingBy: 1) * 86_400).rounded())
-            return String(format: "%02d:%02d", seconds / 3600, (seconds % 3600) / 60)
+        case .elapsed(let unit, let withSeconds):
+            let absoluteSeconds = (abs(number) * 86_400).rounded()
+            guard absoluteSeconds < Double(Int64.max) else { return String(number) }
+            let seconds = Int64(absoluteSeconds)
+            let sign = number < 0 ? "-" : ""
+            if unit == "s" { return sign + String(seconds) }
+            if unit == "m" { return sign + String(seconds / 60) + (withSeconds ? String(format: ":%02lld", seconds % 60) : "") }
+            return sign + String(seconds / 3600) + String(format: ":%02lld", seconds / 60 % 60) + (withSeconds ? String(format: ":%02lld", seconds % 60) : "")
+        case .time(let withSeconds):
+            let fraction = number - floor(number)
+            let seconds = Int((fraction * 86_400).rounded()) % 86_400
+            return String(format: "%02d:%02d", seconds / 3600, (seconds % 3600) / 60) + (withSeconds ? String(format: ":%02d", seconds % 60) : "")
         case .percent(let decimals):
             return String(format: "%.\(decimals)f%%", number * 100)
         case .fixed(let decimals, let grouping):
@@ -174,14 +204,7 @@ enum SpreadsheetConverter {
             formatter.locale = Locale(identifier: "en_US_POSIX")
             return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
         case .general:
-            if number == number.rounded(), abs(number) < 1e15 { return String(Int64(number)) }
-            let formatter = NumberFormatter()
-            formatter.numberStyle = .decimal
-            formatter.usesGroupingSeparator = false
-            formatter.maximumSignificantDigits = 11
-            formatter.usesSignificantDigits = true
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
+            return String(number)
         }
     }
 
@@ -191,130 +214,103 @@ enum SpreadsheetConverter {
         var digits = ""
         for character in reference.uppercased() {
             if let ascii = character.asciiValue, character.isLetter {
+                guard ascii >= 65, ascii <= 90, column <= 16384 else { return nil }
                 column = column * 26 + Int(ascii - 64)
             } else if character.isNumber {
                 digits.append(character)
             }
         }
-        guard column > 0, let row = Int(digits), row > 0 else { return nil }
+        guard column > 0, column <= 16384, let row = Int(digits), row > 0, row <= 1_048_576 else { return nil }
         return (column - 1, row - 1)
     }
 
     // MARK: PDF
 
-    private static let bodyFont = NSFont.systemFont(ofSize: 9)
-    private static let headerFont = NSFont.boldSystemFont(ofSize: 9)
-
     private static func renderPDF(_ sheets: [Sheet], to output: URL) throws {
-        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
-        guard let context = CGContext(output as CFURL, mediaBox: &mediaBox, nil) else {
-            throw ConversionError.writeFailed(output)
+        var mediaBox = CGRect(x: 0, y: 0, width: 792, height: 612)
+        guard let context = CGContext(output as CFURL, mediaBox: &mediaBox, nil) else { throw ConversionError.writeFailed(output) }
+        defer { context.closePDF() }
+        let margin: CGFloat = 36, usable: CGFloat = 720, pageBottom: CGFloat = 576
+        let font = NSFont.systemFont(ofSize: 9)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black, .paragraphStyle: paragraph]
+        func height(_ text: String, width: CGFloat) -> CGFloat {
+            ceil(NSAttributedString(string: text, attributes: attributes).boundingRect(with: CGSize(width: max(1, width - 10), height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading]).height) + 10
         }
-        let margin: CGFloat = 36
-        let rowHeight: CGFloat = 16
-        let padding: CGFloat = 5
-
+        // Split a tall cell at character boundaries so every part is printed on a page.
+        func pieces(_ text: String, width: CGFloat) throws -> [String] {
+            if height(text, width: width) <= 450 { return [text] }
+            let characters = Array(text)
+            var start = 0, result: [String] = []
+            while start < characters.count {
+                try ConversionWork.check()
+                var low = 1, high = characters.count - start
+                while low < high {
+                    let mid = (low + high + 1) / 2
+                    if height(String(characters[start..<(start + mid)]), width: width) <= 450 { low = mid } else { high = mid - 1 }
+                }
+                result.append(String(characters[start..<(start + low)])); start += low
+            }
+            return result
+        }
         for sheet in sheets {
-            let columnCount = sheet.rows.map(\.count).max() ?? 0
-            guard columnCount > 0 else { continue }
-            // Natural column widths, capped so one long cell can't take over the page.
-            var widths = [CGFloat](repeating: 36, count: columnCount)
-            for (rowIndex, row) in sheet.rows.enumerated() {
-                for (column, text) in row.enumerated() {
-                    let font = rowIndex == 0 ? headerFont : bodyFont
-                    let width = ceil((text as NSString).size(withAttributes: [.font: font]).width) + padding * 2 + 6
-                    widths[column] = min(max(widths[column], width), 220)
-                }
+            try ConversionWork.check()
+            let count = sheet.rows.first?.count ?? 0
+            guard count > 0 else { continue }
+            var widths = [CGFloat](repeating: 44, count: count)
+            for row in sheet.rows {
+                try ConversionWork.check()
+                for (index, text) in row.enumerated() { widths[index] = min(220, max(widths[index], (text as NSString).size(withAttributes: [.font: font]).width + 12)) }
             }
-            let total = widths.reduce(0, +)
-            // Portrait if it fits, otherwise landscape; then shrink a little, then split columns.
-            let landscape = total > 612 - margin * 2
-            let page = landscape ? CGSize(width: 792, height: 612) : CGSize(width: 612, height: 792)
-            let usable = page.width - margin * 2
-            let scale = max(0.7, min(1, usable / total))
-            var chunks: [Range<Int>] = []
-            var start = 0, running: CGFloat = 0
-            for column in 0..<columnCount {
-                if running + widths[column] * scale > usable, column > start {
-                    chunks.append(start..<column); start = column; running = 0
+            var startColumn = 0
+            while startColumn < count {
+                var endColumn = startColumn, total: CGFloat = 0
+                while endColumn < count && total + widths[endColumn] <= usable { total += widths[endColumn]; endColumn += 1 }
+                let chunk = startColumn..<max(startColumn + 1, endColumn)
+                var pageOpen = false, y: CGFloat = 0
+                func row(_ values: [String], at y: CGFloat, height h: CGFloat, header: Bool) {
+                    var x = margin
+                    for c in chunk {
+                        let rect = NSRect(x: x, y: y, width: widths[c], height: h)
+                        if header { NSColor(white: 0.95, alpha: 1).setFill(); rect.fill() }
+                        NSColor(white: 0.75, alpha: 1).setStroke()
+                        let border = NSBezierPath(rect: rect); border.lineWidth = 0.5; border.stroke()
+                        NSAttributedString(string: c < values.count ? values[c] : "", attributes: attributes).draw(with: rect.insetBy(dx: 5, dy: 5), options: [.usesLineFragmentOrigin, .usesFontLeading])
+                        x += widths[c]
+                    }
                 }
-                running += widths[column] * scale
-            }
-            chunks.append(start..<columnCount)
-
-            let header = sheet.rows.first ?? []
-            let body = Array(sheet.rows.dropFirst())
-            let titleHeight: CGFloat = 26
-            let rowsPerPage = max(1, Int((page.height - margin * 2 - titleHeight) / (rowHeight * scale)) - 1)
-
-            for (chunkIndex, chunk) in chunks.enumerated() {
-                var first = 0
-                repeat {
-                    var box = CGRect(origin: .zero, size: page)
-                    context.beginPage(mediaBox: &box)
-                    context.translateBy(x: 0, y: page.height)
-                    context.scaleBy(x: 1, y: -1)
+                func closePage() {
+                    if pageOpen { NSGraphicsContext.restoreGraphicsState(); context.endPage(); pageOpen = false }
+                }
+                defer { closePage() }
+                func newPage() {
+                    closePage()
+                    context.beginPage(mediaBox: &mediaBox)
+                    context.translateBy(x: 0, y: mediaBox.height); context.scaleBy(x: 1, y: -1)
                     NSGraphicsContext.saveGraphicsState()
                     NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
-
-                    var title = sheet.name
-                    if chunks.count > 1 { title += "  (columns \(columnName(chunk.lowerBound))–\(columnName(chunk.upperBound - 1)))" }
-                    NSAttributedString(string: title, attributes: [
-                        .font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: Palette.brown,
-                    ]).draw(at: NSPoint(x: margin, y: margin))
-
-                    let last = min(body.count, first + rowsPerPage)
-                    var y = margin + titleHeight
-                    drawRow(header, chunk: chunk, widths: widths, scale: scale, y: y, height: rowHeight,
-                            isHeader: true, numeric: sheet.numericColumns, margin: margin, padding: padding)
-                    y += rowHeight * scale
-                    for index in first..<last {
-                        drawRow(body[index], chunk: chunk, widths: widths, scale: scale, y: y, height: rowHeight,
-                                isHeader: false, numeric: sheet.numericColumns, margin: margin, padding: padding,
-                                striped: index % 2 == 1)
-                        y += rowHeight * scale
+                    pageOpen = true
+                    NSAttributedString(string: sheet.name, attributes: [.font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.black]).draw(at: NSPoint(x: margin, y: margin))
+                    y = margin + 24
+                    row(sheet.rows[0], at: y, height: 24, header: true)
+                    y += 24
+                }
+                newPage()
+                for values in sheet.rows.dropFirst() {
+                    try ConversionWork.check()
+                    var parts = [[String]](repeating: [""], count: count)
+                    for c in chunk { parts[c] = try pieces(c < values.count ? values[c] : "", width: widths[c]) }
+                    for part in 0..<(chunk.map { parts[$0].count }.max() ?? 1) {
+                        let fragment = parts.map { part < $0.count ? $0[part] : "" }
+                        let h = max(20, chunk.map { height(fragment[$0], width: widths[$0]) }.max() ?? 20)
+                        if y + h > pageBottom { newPage() }
+                        row(fragment, at: y, height: h, header: false); y += h
                     }
-                    NSGraphicsContext.restoreGraphicsState()
-                    context.endPage()
-                    first = last
-                } while first < body.count
-                _ = chunkIndex
+                }
+                closePage()
+                startColumn = chunk.upperBound
             }
-        }
-        context.closePDF()
-    }
-
-    private static func drawRow(_ row: [String], chunk: Range<Int>, widths: [CGFloat], scale: CGFloat, y: CGFloat,
-                                height: CGFloat, isHeader: Bool, numeric: Set<Int>, margin: CGFloat,
-                                padding: CGFloat, striped: Bool = false) {
-        var x = margin
-        let h = height * scale
-        for column in chunk {
-            let w = widths[column] * scale
-            let cell = NSRect(x: x, y: y, width: w, height: h)
-            if isHeader {
-                Palette.peach.withAlphaComponent(0.6).setFill(); cell.fill()
-            } else if striped {
-                NSColor(white: 0.97, alpha: 1).setFill(); cell.fill()
-            }
-            NSColor(white: 0.82, alpha: 1).setStroke()
-            let border = NSBezierPath(rect: cell); border.lineWidth = 0.5; border.stroke()
-
-            let text = column < row.count ? row[column] : ""
-            if !text.isEmpty {
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.lineBreakMode = .byTruncatingTail
-                paragraph.alignment = !isHeader && numeric.contains(column) ? .right : .left
-                let font = (isHeader ? headerFont : bodyFont).withSize(9 * scale)
-                let attributed = NSAttributedString(string: text.replacingOccurrences(of: "\n", with: " "), attributes: [
-                    .font: font, .foregroundColor: NSColor(white: 0.1, alpha: 1), .paragraphStyle: paragraph,
-                ])
-                let textHeight = font.ascender - font.descender
-                attributed.draw(with: NSRect(x: x + padding * scale, y: y + (h - textHeight) / 2,
-                                             width: w - padding * 2 * scale, height: textHeight),
-                                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-            }
-            x += w
         }
     }
 

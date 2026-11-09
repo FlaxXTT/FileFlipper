@@ -12,6 +12,7 @@ enum WordMarkdown {
         let context = Context(archive: archive)
         var blocks: [String] = []
         context.blocks(in: body, into: &blocks)
+        try ConversionWork.check()
 
         var output = ""
         for (index, block) in blocks.enumerated() {
@@ -108,6 +109,7 @@ enum WordMarkdown {
 
         func blocks(in container: XMLElement, into blocks: inout [String]) {
             for case let element as XMLElement in container.children ?? [] {
+                if Task.isCancelled { return }
                 switch element.localName {
                 case "p":
                     if let block = paragraph(element) { blocks.append(block) }
@@ -152,7 +154,7 @@ enum WordMarkdown {
                 let styleLevel = style.name.split(separator: " ").last.flatMap { Int($0) }.map { max(0, $0 - 1) }
                 let level = pPr?.child("numPr")?.child("ilvl")?.attr("val").flatMap(Int.init) ?? style.level ?? styleLevel ?? 0
                 let ordered = numbering[numID]?[level] ?? style.name.contains("number")
-                let indent = String(repeating: "   ", count: level)
+                let indent = String(repeating: "   ", count: max(0, min(8, level)))
                 if ordered {
                     var levels = counters[numID] ?? [:]
                     levels[level, default: 0] += 1
@@ -164,7 +166,7 @@ enum WordMarkdown {
             }
             // "List Bullet 2" and friends: the trailing number is the nesting level.
             let styleLevel = style.name.split(separator: " ").last.flatMap { Int($0) }.map { max(0, $0 - 1) } ?? 0
-            let styleIndent = String(repeating: "   ", count: styleLevel)
+            let styleIndent = String(repeating: "   ", count: max(0, min(8, styleLevel)))
             if style.name.contains("list bullet") { return styleIndent + "- " + text }
             if style.name.contains("list number") { return styleIndent + "1. " + text }
             if style.name == "quote" || style.name == "intense quote" { return "> " + text }

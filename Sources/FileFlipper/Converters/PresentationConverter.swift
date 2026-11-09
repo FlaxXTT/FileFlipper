@@ -58,10 +58,12 @@ enum PresentationConverter {
 
     static func toPDF(_ url: URL) throws -> URL {
         let deck = try read(url)
-        let output = OutputNaming.next(to: url, ext: "pdf")
+        return try OutputNaming.withFile(nextTo: url, ext: "pdf") { output in
         var mediaBox = CGRect(origin: .zero, size: deck.size)
         guard let context = CGContext(output as CFURL, mediaBox: &mediaBox, nil) else { throw ConversionError.writeFailed(output) }
+        defer { context.closePDF() }
         for slide in deck.slides {
+            try ConversionWork.check()
             context.beginPage(mediaBox: &mediaBox)
             context.translateBy(x: 0, y: deck.size.height)
             context.scaleBy(x: 1, y: -1)
@@ -71,8 +73,7 @@ enum PresentationConverter {
             NSGraphicsContext.restoreGraphicsState()
             context.endPage()
         }
-        context.closePDF()
-        return output
+        }
     }
 
     static func toMarkdown(_ url: URL) throws -> URL {
@@ -115,9 +116,7 @@ enum PresentationConverter {
             let heading = "## Slide \(index + 1)" + (title.map { ": " + MarkdownWriter.escape($0) } ?? "")
             parts.append(([heading] + lines).joined(separator: "\n\n"))
         }
-        let output = OutputNaming.next(to: url, ext: "md")
-        try (parts.joined(separator: "\n\n") + "\n").write(to: output, atomically: true, encoding: .utf8)
-        return output
+        return try OutputNaming.withFile(nextTo: url, ext: "md") { try (parts.joined(separator: "\n\n") + "\n").write(to: $0, atomically: true, encoding: .utf8) }
     }
 
     private static func rect(of item: Item) -> CGRect {
@@ -157,8 +156,9 @@ enum PresentationConverter {
 
         var slides: [Slide] = []
         for reference in presentation.child("sldIdLst")?.children("sldId") ?? [] {
+            try ConversionWork.check()
             guard let id = reference.relationshipID, let path = presentationRels[id]?.target,
-                  let root = OfficePackage.xml(archive, path) else { continue }
+                  let root = OfficePackage.xml(archive, path) else { throw ConversionError.unreadable(url) }
             if root.attr("show") == "0" { continue }
             slides.append(readSlide(root, path: path, archive: archive))
         }
@@ -397,7 +397,7 @@ enum PresentationConverter {
             for p in body.children("p") {
                 var paragraph = Paragraph()
                 let pPr = p.child("pPr")
-                paragraph.level = pPr?.attr("lvl").flatMap(Int.init) ?? 0
+                paragraph.level = max(0, min(8, pPr?.attr("lvl").flatMap(Int.init) ?? 0))
                 let levelStyles = levelProps(paragraph.level)
                 paragraph.alignment = alignment(pPr?.attr("algn") ?? levelStyles.lazy.compactMap { $0.attr("algn") }.first)
                     ?? (isTitle ? defaults.titleAlignment : .left)

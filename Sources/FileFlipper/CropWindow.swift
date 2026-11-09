@@ -24,6 +24,12 @@ enum CropWindow {
                                  height: canvasSize.height + rowHeight + rowGap + margin * 2)
 
         let content = NSView(frame: NSRect(origin: .zero, size: contentSize))
+        let glass = NSVisualEffectView(frame: content.bounds)
+        glass.material = .popover
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.appearance = NSAppearance(named: .aqua)
+        content.addSubview(glass)
         let cropView = CropView(image: image,
                                 frame: NSRect(x: margin, y: margin + rowHeight + rowGap,
                                               width: canvasSize.width, height: canvasSize.height),
@@ -47,7 +53,7 @@ enum CropWindow {
         }
 
         let sizeLabel = NSTextField(labelWithString: "")
-        sizeLabel.textColor = Palette.brown.withAlphaComponent(0.6)
+        sizeLabel.textColor = .black
         sizeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         sizeLabel.frame = NSRect(x: x + 10, y: margin + (rowHeight - 16) / 2, width: 130, height: 16)
         content.addSubview(sizeLabel)
@@ -72,7 +78,8 @@ enum CropWindow {
                               backing: .buffered, defer: false)
         window.title = L("Crop “%@”", fileName)
         window.titlebarAppearsTransparent = true
-        window.backgroundColor = Palette.cream
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.appearance = NSAppearance(named: .aqua)
         window.contentView = content
         window.isReleasedWhenClosed = false
@@ -87,6 +94,7 @@ enum CropWindow {
         window.makeKeyAndOrderFront(nil)
         let response = withExtendedLifetime(handler) { NSApp.runModal(for: window) }
         window.orderOut(nil)
+        window.close()
         return response == .OK ? cropView.cropRectInPixels : nil
     }
 
@@ -170,14 +178,14 @@ private final class PillButton: NSButton {
         let pressed = isHighlighted
         switch style {
         case .primary:
-            return (Palette.orange.withAlphaComponent(pressed ? 0.75 : (isHovering ? 0.9 : 1)), .white)
+            return (Palette.orange.withAlphaComponent(pressed ? 0.55 : (isHovering ? 0.45 : 0.35)), .black)
         case .secondary:
-            return (Palette.peach.withAlphaComponent(pressed ? 0.95 : (isHovering ? 0.8 : 0.6)), Palette.brown)
+            return (Palette.peach.withAlphaComponent(pressed ? 0.5 : (isHovering ? 0.4 : 0.25)), Palette.brown)
         case .choice where isOn:
-            return (Palette.orange.withAlphaComponent(0.88), .white)
+            return (Palette.orange.withAlphaComponent(0.5), .black)
         case .choice:
             return (Palette.peach.withAlphaComponent(pressed ? 0.85 : (isHovering ? 0.7 : 0.45)),
-                    Palette.brown.withAlphaComponent(0.85))
+                    NSColor.black)
         }
     }
 

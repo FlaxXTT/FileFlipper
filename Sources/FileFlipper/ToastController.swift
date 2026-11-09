@@ -5,6 +5,7 @@ final class ToastController {
     private var panel: NSPanel?
     private let iconView = NSImageView()
     private let label = NSTextField(labelWithString: "")
+    private let progress = NSProgressIndicator()
     private var token = 0
 
     func show(_ text: String, symbol: String, duration: TimeInterval? = 2.5) {
@@ -13,6 +14,9 @@ final class ToastController {
 
         iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+        progress.isHidden = duration != nil
+        iconView.isHidden = duration == nil
+        if duration == nil { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
         label.stringValue = text
         label.sizeToFit()
 
@@ -47,6 +51,7 @@ final class ToastController {
     }
 
     private func layout(width: CGFloat, height: CGFloat) {
+        progress.frame = NSRect(x: 16, y: (height - 20) / 2, width: 20, height: 20)
         iconView.frame = NSRect(x: 16, y: (height - 20) / 2, width: 20, height: 20)
         let labelHeight = label.frame.height
         label.frame = NSRect(x: 44, y: (height - labelHeight) / 2, width: width - 60, height: labelHeight)
@@ -65,17 +70,22 @@ final class ToastController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
         let background = NSVisualEffectView()
-        background.material = .hudWindow
+        background.material = .popover
+        background.appearance = NSAppearance(named: .aqua)
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
         background.layer?.cornerRadius = 12
         background.layer?.masksToBounds = true
 
-        iconView.contentTintColor = NSColor(calibratedRed: 0.98, green: 0.45, blue: 0.15, alpha: 1)
+        iconView.contentTintColor = .black
         label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .labelColor
+        label.textColor = .black
         label.lineBreakMode = .byTruncatingMiddle
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.isIndeterminate = true
+        background.addSubview(progress)
         background.addSubview(iconView)
         background.addSubview(label)
         panel.contentView = background

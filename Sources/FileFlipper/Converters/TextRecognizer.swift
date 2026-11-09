@@ -10,16 +10,9 @@ enum TextRecognizer {
         "fr-FR", "de-DE", "es-ES", "it-IT", "pt-BR", "ru-RU",
     ]
 
-    /// A page counts as having text if PDFKit finds more than a stray header or page number.
-    static func hasTextLayer(_ page: PDFPage) -> Bool {
-        let characters = (page.string ?? "").filter { !$0.isWhitespace }
-        return characters.count >= 20
-    }
-
-    /// OCR one page. Returns an empty string if nothing is readable.
-    static func recognize(_ page: PDFPage) -> String {
-        // 3x (216 dpi) gives Vision enough detail for small print.
-        guard let image = PDFConverter.render(page, scale: 3) else { return "" }
+    private static func recognize(_ page: PDFPage) throws -> [(box: CGRect, text: String)] {
+        try ConversionWork.check()
+        guard let image = PDFConverter.render(page, scale: 3, fitForOCR: true) else { throw ConversionError.message(L("Could not render page for OCR")) }
 
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
@@ -34,13 +27,48 @@ enum TextRecognizer {
         do {
             try VNImageRequestHandler(cgImage: image).perform([request])
         } catch {
-            return ""
+            throw ConversionError.message(L("Text recognition failed: %@", error.localizedDescription))
         }
         let lines = (request.results ?? []).compactMap { observation -> (box: CGRect, text: String)? in
             guard let text = observation.topCandidates(1).first?.string else { return nil }
             return (observation.boundingBox, text)
         }
-        return joinIntoLines(lines)
+        try ConversionWork.check()
+        return lines
+    }
+
+    /// Retain native text, then add OCR lines from regions not covered by that text.
+    static func text(_ page: PDFPage) throws -> String {
+        let original = page.string ?? ""
+        let recognized = try recognize(page)
+        let box = page.bounds(for: .mediaBox)
+        let sideways = page.rotation % 180 != 0
+        let size = CGSize(width: sideways ? box.height : box.width, height: sideways ? box.width : box.height)
+        let transform = PDFConverter.drawingTransform(page, size: size)
+        let selections = page.selection(for: box)?.selectionsByLine() ?? []
+        let native = selections.compactMap { selection -> (box: CGRect, text: String)? in
+            guard let text = selection.string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let rect = selection.bounds(for: page).applying(transform)
+            return (CGRect(x: rect.minX / size.width, y: rect.minY / size.height, width: rect.width / size.width, height: rect.height / size.height), text)
+        }
+        func normalized(_ text: String) -> String {
+            String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+        }
+        let additional = recognized.filter { line in
+            !native.contains { existing in
+                let intersection = existing.box.intersection(line.box)
+                let overlap = intersection.isNull ? 0 : intersection.width * intersection.height
+                let area = max(0.000001, min(existing.box.width * existing.box.height, line.box.width * line.box.height))
+                let near = abs(existing.box.midY - line.box.midY) < max(existing.box.height, line.box.height)
+                return overlap / area > 0.5 || (near && normalized(existing.text) == normalized(line.text))
+            }
+        }
+        if additional.isEmpty { return original }
+        if native.isEmpty {
+            return original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? joinIntoLines(additional) : original + "\n\n" + joinIntoLines(additional)
+        }
+        return joinIntoLines(native + additional)
     }
 
     /// Vision returns pieces of text; put pieces on the same line side by side, top to bottom.

@@ -2,9 +2,7 @@ import AppKit
 
 /// Owns the transparent floating panel that hosts the bubble arc.
 final class PickerController {
-    static let size: CGFloat = 420
-    /// How much room the arc needs above (or below) the pointer.
-    private static let arcReach: CGFloat = 200
+    static let size: CGFloat = 280
 
     var onPick: ((PickerItem, [URL]) -> Void)?
 
@@ -20,23 +18,12 @@ final class PickerController {
         let panel = self.panel ?? makePanel()
         let size = Self.size
         var frame = NSRect(x: point.x - size / 2, y: point.y - size / 2, width: size, height: size)
-        var upward = true
         if let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) ?? NSScreen.main {
             let visible = screen.visibleFrame
-            // Near the top of the screen, open the arc downward instead.
-            upward = point.y + Self.arcReach <= visible.maxY
-            // Near the sides, slide the panel back on screen. Only the half with the arc matters,
-            // so the empty half may hang off the top or bottom edge.
-            let bounds = visible.insetBy(dx: -12, dy: -12)
-            frame.origin.x = min(max(frame.minX, bounds.minX), bounds.maxX - size)
-            if upward {
-                frame.origin.y = min(frame.minY, bounds.maxY - size)
-            } else {
-                frame.origin.y = max(frame.minY, bounds.minY)
-            }
+            frame.origin.x = max(visible.minX, min(frame.minX, visible.maxX - size))
+            frame.origin.y = max(visible.minY, min(frame.minY, visible.maxY - size))
         }
         panel.setFrame(frame, display: false)
-        arcView?.opensUpward = upward
         setToolsMode(tools)
 
         panel.alphaValue = 0
@@ -84,13 +71,16 @@ final class PickerController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
         let view = BubbleArcView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        view.setBoundsSize(NSSize(width: 420, height: 420))
         view.onDrop = { [weak self] item, urls in
             guard let self else { return }
             self.hideToken += 1
             self.hide()
             self.onPick?(item, urls)
         }
-        panel.contentView = view
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        container.addSubview(view)
+        panel.contentView = container
 
         self.panel = panel
         self.arcView = view

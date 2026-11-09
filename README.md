@@ -1,3 +1,9 @@
+> 本 fork 的 macOS 版本名为 **Proteus**，当前版本为 **1.5.3**。它在本地处理文件，不提供自动更新；沙盒未授予网络权限。下载请前往本仓库的 Releases。
+>
+> PDF 转 DOCX 提供两种方式：**DOCX** 将每页作为图片保留版面；**DOCX 文字** 导出可编辑文字，但不保留图片和版面。需要 macOS 14 或更高版本。
+>
+> 以下内容来自上游 FileFlipper 项目，部分截图、功能、Windows 版本和下载链接不对应本 fork 的 Proteus macOS 版本。
+
 # FileFlipper — Quick Edit for Mac & Windows
 
 **在 Finder / 文件资源管理器里直接转换文件格式，不用打开任何软件。一键转 Markdown，喂给 AI 更省 token。**

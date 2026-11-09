@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import Darwin
 
 /// Localized text: the English text is the key; translations live in Localizable.strings.
 func L(_ key: String) -> String {
@@ -17,10 +18,12 @@ enum ConversionError: LocalizedError {
     case message(String)
     /// The user backed out (e.g. closed the crop window). Not shown as an error.
     case cancelled
+    case partial([URL], String, Bool)
 
     var errorDescription: String? {
         switch self {
         case .cancelled: return L("Cancelled")
+        case .partial(_, let message, _): return message
         case .unreadable(let url): return L("Couldn't read %@", url.lastPathComponent)
         case .writeFailed(let url): return L("Couldn't write %@", url.lastPathComponent)
         case .unsupported(let what): return L("%@ isn't supported on this Mac", what)
@@ -29,40 +32,81 @@ enum ConversionError: LocalizedError {
     }
 }
 
-/// Converted copies are saved next to the original, never overwriting anything.
+/// Writes into a private staging directory, then publishes without replacing an existing item.
 enum OutputNaming {
-    /// `Photo.heic` + suffix " (compressed)" + ext "jpg" -> `Photo (compressed).jpg`, then `Photo (compressed) 2.jpg`, ...
-    static func next(to url: URL, suffix: String = "", ext: String) -> URL {
-        let directory = url.deletingLastPathComponent()
-        let base = url.deletingPathExtension().lastPathComponent + suffix
-        return unique(in: directory, base: base, ext: ext)
+    static func withFile(nextTo url: URL, suffix: String = "", ext: String, name: String? = nil,
+                         _ write: (URL) throws -> Void) throws -> URL {
+        try staged(near: url, base: name ?? url.deletingPathExtension().lastPathComponent + suffix,
+                   ext: ext, folder: false, write)
     }
 
-    static func unique(in directory: URL, base: String, ext: String) -> URL {
-        func candidate(_ name: String) -> URL {
-            directory.appendingPathComponent(name).appendingPathExtension(ext)
-        }
-        var url = candidate(base)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: url.path) {
-            url = candidate("\(base) \(counter)")
-            counter += 1
-        }
-        return url
+    static func withFolder(nextTo url: URL, suffix: String, _ write: (URL) throws -> Void) throws -> URL {
+        try staged(near: url, base: url.deletingPathExtension().lastPathComponent + suffix,
+                   ext: nil, folder: true, write)
     }
 
-    /// Creates a new folder next to `url` (used when one file produces many outputs).
-    static func makeFolder(next url: URL, suffix: String) throws -> URL {
+    static func withFileAsync(nextTo url: URL, suffix: String = "", ext: String,
+                              _ write: (URL) async throws -> Void) async throws -> URL {
         let directory = url.deletingLastPathComponent()
-        let base = url.deletingPathExtension().lastPathComponent + suffix
-        var folder = directory.appendingPathComponent(base, isDirectory: true)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: folder.path) {
-            folder = directory.appendingPathComponent("\(base) \(counter)", isDirectory: true)
-            counter += 1
+        let staging = try makeStaging(in: directory)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let output = staging.appendingPathComponent("output").appendingPathExtension(ext)
+        try await write(output)
+        try ConversionWork.check()
+        return try publish(output, in: directory, base: url.deletingPathExtension().lastPathComponent + suffix, ext: ext)
+    }
+
+    private static func staged(near url: URL, base: String, ext: String?, folder: Bool,
+                               _ write: (URL) throws -> Void) throws -> URL {
+        try ConversionWork.check()
+        let directory = url.deletingLastPathComponent()
+        let staging = try makeStaging(in: directory)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var output = staging.appendingPathComponent("output", isDirectory: folder)
+        if let ext { output.appendPathExtension(ext) }
+        if folder { try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false) }
+        try write(output)
+        try ConversionWork.check()
+        return try publish(output, in: directory, base: base, ext: ext)
+    }
+
+    private static func makeStaging(in directory: URL) throws -> URL {
+        let staging = directory.appendingPathComponent(".proteus-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        return staging
+    }
+
+    private static func publish(_ staged: URL, in directory: URL, base: String, ext: String?) throws -> URL {
+        var number = 1
+        while true {
+            try ConversionWork.check()
+            var candidate = directory.appendingPathComponent(base + (number == 1 ? "" : " \(number)"))
+            if let ext { candidate.appendPathExtension(ext) }
+            // The destination and staging directory share a filesystem. RENAME_EXCL closes the
+            // check-then-write race, including another app creating the same name at this moment.
+            if renamex_np(staged.path, candidate.path, UInt32(RENAME_EXCL)) == 0 { return candidate }
+            let code = errno
+            if code == EEXIST || code == ENOTEMPTY { number += 1; continue }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: candidate.path])
         }
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
-        return folder
+    }
+}
+
+enum ConversionWork {
+    static let progressContext = TaskLocal<(@Sendable (String) -> Void)?>(wrappedValue: nil)
+
+    static func check() throws {
+        if Task.isCancelled { throw ConversionError.cancelled }
+    }
+
+    static func report(_ message: String) throws {
+        try check()
+        progressContext.wrappedValue?(message)
+    }
+
+    static func onMain<T>(_ work: () throws -> T) rethrows -> T {
+        if Thread.isMainThread { return try work() }
+        return try DispatchQueue.main.sync(execute: work)
     }
 }
 

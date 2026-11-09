@@ -1,7 +1,7 @@
-/* FileFlipper — Simplified Chinese */
+/* Proteus — Simplified Chinese */
 
 "Grant Access" = "授权";
-"FileFlipper needs your permission to save converted files in “%@”. Tip: choose your Home folder to allow every folder inside it at once." = "FileFlipper 需要你的允许，才能把转换后的文件保存到「%@」。提示：选择你的个人文件夹，可以一次允许里面的所有文件夹。";
+"Proteus needs your permission to save converted files in “%@”. Tip: choose your Home folder to allow every folder inside it at once." = "Proteus 需要你的允许，才能把转换后的文件保存到「%@」。提示：选择你的个人文件夹，可以一次允许里面的所有文件夹。";
 "Save as Markdown (OCR for scans)" = "存为 Markdown（扫描件自动 OCR）";
 "Markdown, ready for AI" = "Markdown，直接喂给 AI";
 "One page per slide" = "每张幻灯片一页";
@@ -54,9 +54,9 @@
 "Free" = "自由";
 "Cancel" = "取消";
 "Crop “%@”" = "裁剪「%@」";
-"FileFlipper is already running" = "FileFlipper 已经在运行了";
+"Proteus is already running" = "Proteus 已经在运行了";
 "Look for the ◎ icon in the menu bar at the top-right of your screen." = "请在屏幕右上角的菜单栏里找 ◎ 图标。";
-"FileFlipper needs folder access to save the converted file" = "FileFlipper 需要文件夹权限才能保存转换后的文件";
+"Proteus needs folder access to save the converted file" = "Proteus 需要文件夹权限才能保存转换后的文件";
 "%@ files" = "%@ 个文件";
 "%@: %@…" = "%@：%@…";
 "Saved %@" = "已保存 %@";
@@ -69,17 +69,17 @@
 "Allow Home Folder…" = "允许访问个人文件夹…";
 "Reset Folder Access" = "重置文件夹权限";
 "How to Use…" = "使用说明…";
-"About FileFlipper" = "关于 FileFlipper";
-"Quit FileFlipper" = "退出 FileFlipper";
+"About Proteus" = "关于 Proteus";
+"Quit Proteus" = "退出 Proteus";
 "Launch at Login: %@" = "开机时启动：%@";
 "Convert files right in Finder.\nOpen source under the MIT License." = "在 Finder 里直接转换文件。\n基于 MIT 许可证开源。";
-"How to use FileFlipper" = "FileFlipper 使用说明";
+"How to use Proteus" = "Proteus 使用说明";
 "Convert: start dragging a file in Finder, then hold Shift. Round buttons appear in an arc above the pointer. Drop the file on a format and the converted copy is saved next to the original." = "转换：在 Finder 里拖动文件，同时按住 Shift，鼠标上方会弹出一排圆形按钮。拖到想要的格式上松开，转换好的文件会保存在原文件旁边。";
 "Tools: hold Option + Shift while dragging to see tools for that file type (crop, compress, cut out, rotate, merge, split…)." = "工具：拖动时按住 Option + Shift，会显示这类文件能用的工具（裁剪、压缩、抠图、旋转、合并、拆分……）。";
 "Markdown: pick MD to turn Word, PDF, PowerPoint or Excel into Markdown, ready for AI." = "Markdown：选 MD，就能把 Word、PDF、PPT、Excel 转成 Markdown，直接喂给 AI。";
 "Changed your mind? Let go below the arc and nothing happens." = "不想转了？在按钮下方松开鼠标就行。";
-"Everything happens locally on your Mac. FileFlipper lives in the menu bar." = "所有处理都在你的 Mac 上完成。FileFlipper 待在屏幕右上角的菜单栏里。";
-"The first time you convert a file in a folder, macOS asks you to allow FileFlipper to save there. Choose “Allow Home Folder” to grant access once for all your folders." = "第一次在某个文件夹里转换文件时，系统会请你允许 FileFlipper 在那里保存文件。选「允许访问个人文件夹」，一次授权所有文件夹。";
+"Everything happens locally on your Mac. Proteus lives in the menu bar." = "所有处理都在你的 Mac 上完成。Proteus 待在屏幕右上角的菜单栏里。";
+"The first time you convert a file in a folder, macOS asks you to allow Proteus to save there. Choose “Allow Home Folder” to grant access once for all your folders." = "第一次在某个文件夹里转换文件时，系统会请你允许 Proteus 在那里保存文件。选「允许访问个人文件夹」，一次授权所有文件夹。";
 "Got It" = "知道了";
 "Save as %@" = "存为 %@";
 "No tools for this file type" = "这类文件暂时没有工具";
@@ -111,3 +111,62 @@
 "Made by Microsoft Word, like printing" = "由 Microsoft Word 生成，和打印效果一样";
 "Use Microsoft Word for Word → PDF" = "Word 转 PDF 时使用 Microsoft Word";
 "Word documents are turned into PDFs by Word itself, so they look exactly like printing from Word." = "Word 文档会由 Word 自己转成 PDF，效果和在 Word 里打印完全一样。";
+
+"Could not render page for OCR" = "无法渲染页面以识别文字";
+"Text recognition failed: %@" = "文字识别失败：%@";
+"Couldn't read page %@" = "无法读取第 %@ 页";
+"Saved %@ files, but some failed: %@" = "已保存 %@ 个文件，但部分文件失败：%@";
+
+"Choose Files…" = "选择文件…";
+
+"Cancel Current Conversion" = "取消当前转换";
+
+"Clear Queue (%@)" = "清空队列（%@）";
+
+"Cancelling…" = "正在取消…";
+
+" · %@ queued" = " · 等待 %@ 项";
+
+"Choose files of the same type" = "请选择相同类型的文件";
+
+"Choose supported files of the same type" = "请选择受支持且类型相同的文件";
+
+"Unsupported selection" = "不支持此选择";
+
+"File %@/%@: %@" = "文件 %@/%@：%@";
+
+"Page %@/%@" = "页面 %@/%@";
+
+"Frame %@/%@" = "帧 %@/%@";
+
+"Text only; images and page layout are not preserved" = "仅导出文字，不保留图片和原始版面";
+
+"This tool requires a single-frame image; no file was changed" = "此工具只支持单帧图片，文件未更改";
+
+"Image exceeds the 64-megapixel processing limit" = "图片超过 6400 万像素处理上限";
+
+"Document is too large to lay out completely" = "文档过大，无法完整排版";
+
+"A formula has no saved value. Recalculate and save the spreadsheet first." = "公式没有已保存的结果，请先在表格软件中重新计算并保存。";
+
+"Cell" = "单元格";
+
+"Value" = "值";
+
+"Row" = "行";
+
+"Convert: drag a file in Finder and hold Shift. Drop it on a format in the ring. The converted copy is saved next to the original." = "转换：在 Finder 拖动文件并按住 Shift，拖到圆环中的格式上松开。转换结果保存在原文件旁边。";
+
+"To cancel, drop in the centre or outside the ring. You can also choose files and formats from the menu bar using the keyboard." = "取消：在圆环中央或圆环外松开。也可以从菜单栏选择文件和格式，支持键盘操作。";
+
+"First 15 seconds, 10 frames/s, up to 480 pixels" = "仅前 15 秒，每秒 10 帧，最长边 480 像素";
+
+"PDF to DOCX/RTF exports text, not the original page layout. Office conversion does not reproduce every chart, formula or document feature." = "PDF 转 DOCX/RTF 导出文字，不保留原版面。Office 转换不能完整还原所有图表、公式和文档特性。";
+
+"DOCX Text" = "DOCX 文字";
+"Keeps page layout as images; page text is not editable" = "保留版面，每页作为图片；文字不可直接编辑";
+"Editable text only; images and page layout are not preserved" = "仅导出可编辑文字，不保留图片和原始版面";
+"For PDFs, DOCX preserves each page as an image. DOCX Text and RTF export editable text without original page layout or pictures." = "PDF 转 DOCX 会将每页作为图片保留版面。DOCX 文字和 RTF 导出可编辑文字，不保留原图片和版面。";
+"This PDF has too many pages for DOCX" = "PDF 页数过多，无法导出 DOCX";
+"Page %@ is larger than Word supports (22 inches)" = "第 %@ 页超过 Word 支持的最大尺寸（22 英寸）";
+"The resulting DOCX exceeds 4 GB" = "导出的 DOCX 超过 4 GB";

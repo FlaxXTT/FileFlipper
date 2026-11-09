@@ -8,10 +8,8 @@ struct PickerItem {
     var symbol: String? = nil
     /// One line shown near the pointer while the bubble is hovered.
     var detail: String? = nil
-    /// Some AppKit APIs (HTML import, printing) must run on the main thread.
-    var runsOnMain = false
     /// Takes the dropped files and returns the files it created.
-    let action: ([URL]) throws -> [URL]
+    let action: ([URL]) async throws -> [URL]
 }
 
 enum FileKind: Equatable {
@@ -48,7 +46,9 @@ enum Catalog {
     static func items(for urls: [URL], tools: Bool) -> [PickerItem] {
         guard let first = urls.first else { return [] }
         let kind = FileKind(url: first)
-        let sourceExt = first.pathExtension.lowercased()
+        guard urls.allSatisfy({ FileKind(url: $0) == kind }) else { return [] }
+        let extensions = Set(urls.map { $0.pathExtension.lowercased() })
+        let sourceExt = extensions.count == 1 ? first.pathExtension.lowercased() : ""
 
         if tools {
             return toolItems(kind: kind, count: urls.filter { FileKind(url: $0) == kind }.count)
@@ -87,9 +87,17 @@ enum Catalog {
             items.append(PickerItem(title: L("MD"), detail: L("Save as Markdown (OCR for scans)"), action: perFile(kind) { url in
                 try [PDFConverter.toMarkdown(url)]
             }))
-            for target in DocumentConverter.targets where target.ext == "docx" || target.ext == "rtf" {
-                items.append(PickerItem(title: target.title, runsOnMain: true, action: perFile(kind) { url in
-                    try [PDFConverter.toDocument(url, target: target)]
+            items.append(PickerItem(title: "DOCX", detail: L("Keeps page layout as images; page text is not editable"), action: perFile(kind) { url in
+                try [PDFLayoutDOCX.convert(url)]
+            }))
+            if let textTarget = DocumentConverter.targets.first(where: { $0.ext == "docx" }) {
+                items.append(PickerItem(title: L("DOCX Text"), detail: L("Editable text only; images and page layout are not preserved"), action: perFile(kind) { url in
+                    try [PDFConverter.toDocument(url, target: textTarget)]
+                }))
+            }
+            if let richTarget = DocumentConverter.targets.first(where: { $0.ext == "rtf" }) {
+                items.append(PickerItem(title: "RTF", detail: L("Editable text only; images and page layout are not preserved"), action: perFile(kind) { url in
+                    try [PDFConverter.toDocument(url, target: richTarget)]
                 }))
             }
             return items
@@ -100,17 +108,15 @@ enum Catalog {
                 .map { target in
                     PickerItem(title: target.title,
                                detail: target.ext == "md" ? L("Markdown, ready for AI")
-                                   : target.ext == "pdf" && WordAutomation.extensions.contains(sourceExt)
-                                       && WordAutomation.isEnabled && WordAutomation.isInstalled
-                                   ? L("Made by Microsoft Word, like printing") : nil,
-                               runsOnMain: true, action: perFile(kind) { url in
+ : nil,
+                               action: perFile(kind) { url in
                         try [DocumentConverter.convert(url, to: target)]
                     })
                 }
 
         case .presentation:
             return [
-                PickerItem(title: L("PDF"), detail: L("One page per slide"), runsOnMain: true, action: perFile(kind) { url in
+                PickerItem(title: L("PDF"), detail: L("One page per slide"), action: perFile(kind) { url in
                     try [PresentationConverter.toPDF(url)]
                 }),
                 PickerItem(title: L("MD"), detail: L("Slide titles and text as Markdown"), action: perFile(kind) { url in
@@ -120,7 +126,7 @@ enum Catalog {
 
         case .spreadsheet:
             return [
-                PickerItem(title: L("PDF"), detail: L("Every sheet as a table"), runsOnMain: true, action: perFile(kind) { url in
+                PickerItem(title: L("PDF"), detail: L("Every sheet as a table"), action: perFile(kind) { url in
                     try [SpreadsheetConverter.toPDF(url)]
                 }),
                 PickerItem(title: L("MD"), detail: L("Every sheet as a Markdown table"), action: perFile(kind) { url in
@@ -132,8 +138,8 @@ enum Catalog {
             return MediaConverter.videoTargets
                 .filter { !$0.matches(ext: sourceExt) }
                 .map { target in
-                    PickerItem(title: target.title, action: perFile(kind) { url in
-                        try [MediaConverter.convertVideo(url, to: target)]
+                    PickerItem(title: target.title, detail: target.ext == "gif" ? L("First 15 seconds, 10 frames/s, up to 480 pixels") : nil, action: perFile(kind) { url in
+                        try await [MediaConverter.convertVideo(url, to: target)]
                     })
                 }
 
@@ -142,7 +148,7 @@ enum Catalog {
                 .filter { !$0.matches(ext: sourceExt) }
                 .map { target in
                     PickerItem(title: target.title, action: perFile(kind) { url in
-                        try [MediaConverter.convertAudio(url, to: target)]
+                        try await [MediaConverter.convertAudio(url, to: target)]
                     })
                 }
 
@@ -158,8 +164,7 @@ enum Catalog {
         switch kind {
         case .image:
             items = [
-                PickerItem(title: L("Crop"), symbol: "crop", detail: L("Crop to a selected area"), runsOnMain: true,
-                          action: perFile(kind) { try [ImageConverter.crop($0)] }),
+                PickerItem(title: L("Crop"), symbol: "crop", detail: L("Crop to a selected area"),                           action: perFile(kind) { try [ImageConverter.crop($0)] }),
                 PickerItem(title: L("Compress"), symbol: "rectangle.compress.vertical", detail: L("Make the image smaller"),
                           action: perFile(kind) { try [ImageConverter.compress($0)] }),
                 PickerItem(title: L("Clean"), symbol: "location.slash", detail: L("Remove GPS and camera info"),
@@ -200,29 +205,28 @@ enum Catalog {
         case .video:
             items = [
                 PickerItem(title: L("Compress"), symbol: "rectangle.compress.vertical", detail: L("Make the video smaller"),
-                          action: perFile(kind) { try [MediaConverter.compressVideo($0)] }),
+                          action: perFile(kind) { try await [MediaConverter.compressVideo($0)] }),
                 PickerItem(title: L("720p"), symbol: "arrow.down.right.and.arrow.up.left", detail: L("Convert to 720p"),
-                          action: perFile(kind) { try [MediaConverter.resizeVideo720($0)] }),
+                          action: perFile(kind) { try await [MediaConverter.resizeVideo720($0)] }),
                 PickerItem(title: L("Mute"), symbol: "speaker.slash", detail: L("Remove the sound"),
-                          action: perFile(kind) { try [MediaConverter.mute($0)] }),
+                          action: perFile(kind) { try await [MediaConverter.mute($0)] }),
                 PickerItem(title: L("Audio"), symbol: "music.note", detail: L("Keep only the sound (M4A)"),
-                          action: perFile(kind) { try [MediaConverter.extractAudio($0)] }),
+                          action: perFile(kind) { try await [MediaConverter.extractAudio($0)] }),
                 PickerItem(title: L("Frame"), symbol: "camera", detail: L("Save one frame as an image"),
-                          action: perFile(kind) { try [MediaConverter.snapshot($0)] }),
+                          action: perFile(kind) { try await [MediaConverter.snapshot($0)] }),
             ]
 
         case .audio:
             items = [
                 PickerItem(title: L("Compress"), symbol: "rectangle.compress.vertical", detail: L("Make the file smaller"),
-                          action: perFile(kind) { try [MediaConverter.compressAudio($0)] }),
+                          action: perFile(kind) { try await [MediaConverter.compressAudio($0)] }),
                 PickerItem(title: L("Mono"), symbol: "speaker.wave.1", detail: L("Convert to mono"),
                           action: perFile(kind) { try [MediaConverter.mono($0)] }),
             ]
 
         case .document:
             items = [
-                PickerItem(title: L("Plain"), symbol: "textformat", detail: L("Remove all formatting"), runsOnMain: true,
-                          action: perFile(kind) { try [DocumentConverter.stripFormatting($0)] }),
+                PickerItem(title: L("Plain"), symbol: "textformat", detail: L("Remove all formatting"),                           action: perFile(kind) { try [DocumentConverter.stripFormatting($0)] }),
             ]
 
         case .presentation, .spreadsheet, .other:
@@ -249,25 +253,37 @@ enum Catalog {
     }
 
     /// Runs `body` for every dropped file of the given kind.
-    private static func perFile(_ kind: FileKind, _ body: @escaping (URL) throws -> [URL]) -> ([URL]) throws -> [URL] {
+    private static func perFile(_ kind: FileKind, _ body: @escaping (URL) async throws -> [URL]) -> ([URL]) async throws -> [URL] {
         return { urls in
             var outputs: [URL] = []
             var firstError: Error?
-            for url in urls where FileKind(url: url) == kind {
+            guard urls.allSatisfy({ FileKind(url: $0) == kind }) else {
+                throw ConversionError.message(L("Choose files of the same type"))
+            }
+            for (index, url) in urls.enumerated() {
                 do {
-                    outputs += try body(url)
+                    try ConversionWork.report(L("File %@/%@: %@", String(index + 1), String(urls.count), url.lastPathComponent))
+                    outputs += try await body(url)
+                } catch ConversionError.cancelled {
+                    throw ConversionError.partial(outputs, L("Cancelled"), true)
+                } catch is CancellationError {
+                    throw ConversionError.partial(outputs, L("Cancelled"), true)
                 } catch {
                     firstError = firstError ?? error
                 }
             }
-            if outputs.isEmpty, let firstError { throw firstError }
+            if let firstError {
+                if outputs.isEmpty { throw firstError }
+                throw ConversionError.partial(outputs, firstError.localizedDescription, false)
+            }
             return outputs
         }
     }
 
-    private static func merge(_ kind: FileKind) -> ([URL]) throws -> [URL] {
+    private static func merge(_ kind: FileKind) -> ([URL]) async throws -> [URL] {
         return { urls in
-            let matching = urls.filter { FileKind(url: $0) == kind }
+            guard urls.allSatisfy({ FileKind(url: $0) == kind }) else { throw ConversionError.message(L("Choose files of the same type")) }
+            let matching = urls
             guard let first = matching.first else { return [] }
             return try [PDFConverter.makePDF(from: matching, near: first, name: "Merged")]
         }

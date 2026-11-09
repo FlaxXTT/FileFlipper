@@ -2,7 +2,7 @@ import AppKit
 import OSLog
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum Keys {
         static let enabled = "enabled"
         static let shownWelcome = "shownWelcome"
@@ -12,7 +12,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = DragMonitor()
     private let picker = PickerController()
     private let toast = ToastController()
-    private let log = Logger(subsystem: "com.aimeesun.fileflipper", category: "actions")
+    private let log = Logger(subsystem: "local.fileflipper.offline", category: "actions")
+
+    private struct Job {
+        let id = UUID()
+        let item: PickerItem
+        let urls: [URL]
+        let endAccess: () -> Void
+    }
+    private var pending: [Job] = []
+    private var activeID: UUID?
+    private var activeTask: Task<Void, Never>?
+    private var terminateWhenIdle = false
+    private var observers: [NSObjectProtocol] = []
+    private var completedFiles = 0
+    private var failures: [String] = []
+    private var cancelledTasks = 0
+    private var progressText = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Two running copies (e.g. one in Applications and one in a build folder) would each show a picker.
@@ -21,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !others.isEmpty {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
-            alert.messageText = L("FileFlipper is already running")
+            alert.messageText = L("Proteus is already running")
             alert.informativeText = L("Look for the ◎ icon in the menu bar at the top-right of your screen.")
             alert.runModal()
             NSApp.terminate(nil)
@@ -50,9 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
                      NSWorkspace.sessionDidBecomeActiveNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.monitor.restart()
-            }
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.monitor.restart() }
+            })
         }
 
         if !UserDefaults.standard.bool(forKey: Keys.shownWelcome) {
@@ -67,50 +83,132 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Sandbox: we need permission to write into the folders holding these files.
         guard let endAccess = FolderAccess.shared.beginAccess(to: urls.map { $0.deletingLastPathComponent() }) else {
             log.error("No folder access for \(urls.first?.deletingLastPathComponent().path ?? "?", privacy: .public)")
-            toast.show(L("FileFlipper needs folder access to save the converted file"), symbol: "lock.fill", duration: 4)
+            toast.show(L("Proteus needs folder access to save the converted file"), symbol: "lock.fill", duration: 4)
             return
         }
 
-        let what = urls.count == 1 ? urls[0].lastPathComponent : L("%@ files", String(urls.count))
-        toast.show(L("%@: %@…", item.title, what), symbol: "hourglass", duration: nil)
+        pending.append(Job(item: item, urls: urls, endAccess: endAccess))
+        if activeTask == nil { startNext() } else { showProgress() }
+    }
 
-        let work = { () -> Result<[URL], Error> in
-            Result { try item.action(urls) }
-        }
-        if item.runsOnMain {
-            DispatchQueue.main.async { [weak self] in
-                let result = work()
-                endAccess()
-                self?.finish(result, item: item)
-            }
-        } else {
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = work()
-                DispatchQueue.main.async { [weak self] in
-                    endAccess()
-                    self?.finish(result, item: item)
+    private func startNext() {
+        guard !pending.isEmpty else { return }
+        let job = pending.removeFirst()
+        activeID = job.id
+        progressText = L("%@: %@…", job.item.title, job.urls.count == 1 ? job.urls[0].lastPathComponent : L("%@ files", String(job.urls.count)))
+        showProgress()
+        let owner = self
+        activeTask = Task.detached(priority: .userInitiated) {
+            let result: Result<[URL], Error>
+            do {
+                let outputs = try await ConversionWork.progressContext.withValue({ message in
+                    Task { @MainActor in
+                        guard owner.activeID == job.id else { return }
+                        owner.progressText = message
+                        owner.showProgress()
+                    }
+                }) {
+                    try ConversionWork.check()
+                    return try await job.item.action(job.urls)
                 }
-            }
+                result = .success(outputs)
+            } catch is CancellationError { result = .failure(ConversionError.cancelled) }
+            catch { result = .failure(error) }
+            await owner.complete(result, job: job)
         }
     }
 
-    private func finish(_ result: Result<[URL], Error>, item: PickerItem) {
+    private func showProgress() {
+        let queued = pending.isEmpty ? "" : L(" · %@ queued", String(pending.count))
+        toast.show(progressText + queued, symbol: "hourglass", duration: nil)
+    }
+
+    private func complete(_ result: Result<[URL], Error>, job: Job) {
+        job.endAccess()
+        activeTask = nil
+        activeID = nil
         switch result {
-        case .success(let outputs) where outputs.count == 1:
-            toast.show(L("Saved %@", outputs[0].lastPathComponent), symbol: "checkmark.circle.fill")
-            NSSound(named: "Pop")?.play()
-        case .success(let outputs) where outputs.count > 1:
-            toast.show(L("Saved %@ files", String(outputs.count)), symbol: "checkmark.circle.fill")
-            NSSound(named: "Pop")?.play()
-        case .success:
-            toast.show(L("%@: nothing to do", item.title), symbol: "exclamationmark.circle")
-        case .failure(ConversionError.cancelled):
-            toast.show(L("Cancelled"), symbol: "xmark.circle", duration: 1.2)
+        case .success(let outputs): completedFiles += outputs.count
+        case .failure(ConversionError.cancelled): cancelledTasks += 1
+        case .failure(ConversionError.partial(let outputs, let message, let cancelled)):
+            completedFiles += outputs.count
+            if cancelled { cancelledTasks += 1 } else { failures.append(message) }
         case .failure(let error):
-            log.error("\(item.title, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            toast.show(error.localizedDescription, symbol: "xmark.octagon.fill", duration: 4)
-            NSSound.beep()
+            failures.append(error.localizedDescription)
+            log.error("Conversion failed: \(error.localizedDescription, privacy: .public)")
         }
+        if terminateWhenIdle { NSApp.reply(toApplicationShouldTerminate: true); return }
+        if !pending.isEmpty { startNext(); return }
+        let summary = L("Saved %@ files", String(completedFiles))
+        if let error = failures.first {
+            toast.show(summary + " · " + error, symbol: "exclamationmark.circle", duration: 6)
+        } else if cancelledTasks > 0 {
+            toast.show(summary + " · " + L("Cancelled"), symbol: "xmark.circle", duration: 4)
+        } else {
+            toast.show(summary, symbol: "checkmark.circle.fill")
+        }
+        completedFiles = 0
+        failures.removeAll()
+        cancelledTasks = 0
+    }
+
+    @objc private func cancelCurrent() {
+        activeTask?.cancel()
+        progressText = L("Cancelling…")
+        showProgress()
+        if NSApp.modalWindow != nil { NSApp.abortModal() }
+    }
+
+    @objc private func clearQueue() {
+        for job in pending { job.endAccess() }
+        cancelledTasks += pending.count
+        pending.removeAll()
+        if activeTask != nil { showProgress() }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        monitor.stop()
+        picker.hide()
+        clearQueue()
+        guard activeTask != nil else { return .terminateNow }
+        terminateWhenIdle = true
+        cancelCurrent()
+        return .terminateLater
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        monitor.stop()
+        for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+    }
+
+    @objc private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        let menu = NSMenu()
+        let items = Catalog.items(for: panel.urls, tools: false) + Catalog.items(for: panel.urls, tools: true)
+        guard !items.isEmpty else {
+            toast.show(L("Choose supported files of the same type"), symbol: "exclamationmark.circle")
+            return
+        }
+        chosenURLs = panel.urls
+        chosenItems = items
+        for (index, item) in items.enumerated() {
+            let entry = NSMenuItem(title: item.title, action: #selector(chooseFormat(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = index
+            entry.toolTip = item.detail
+            menu.addItem(entry)
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+    private var chosenURLs: [URL] = []
+    private var chosenItems: [PickerItem] = []
+    @objc private func chooseFormat(_ sender: NSMenuItem) {
+        guard chosenItems.indices.contains(sender.tag) else { return }
+        run(chosenItems[sender.tag], on: chosenURLs)
+        chosenItems = []; chosenURLs = []
     }
 
     // MARK: Menu bar
@@ -118,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setUpStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "circle.circle", accessibilityDescription: "FileFlipper")
+            button.image = NSImage(systemSymbolName: "circle.circle", accessibilityDescription: "Proteus")
             button.image?.isTemplate = true
         }
         let menu = NSMenu()
@@ -129,6 +227,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        let choose = NSMenuItem(title: L("Choose Files…"), action: #selector(chooseFiles), keyEquivalent: "o")
+        choose.target = self
+        menu.addItem(choose)
+        if activeTask != nil {
+            let cancel = NSMenuItem(title: L("Cancel Current Conversion"), action: #selector(cancelCurrent), keyEquivalent: ".")
+            cancel.target = self
+            menu.addItem(cancel)
+        }
+        if !pending.isEmpty {
+            let clear = NSMenuItem(title: L("Clear Queue (%@)", String(pending.count)), action: #selector(clearQueue), keyEquivalent: "")
+            clear.target = self
+            menu.addItem(clear)
+        }
+        menu.addItem(.separator())
         let enabled = NSMenuItem(title: L("Enabled"), action: #selector(toggleEnabled), keyEquivalent: "")
         enabled.target = self
         enabled.state = monitor.isEnabled ? .on : .off
@@ -138,14 +250,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
-
-        if WordAutomation.isInstalled {
-            let word = NSMenuItem(title: L("Use Microsoft Word for Word → PDF"), action: #selector(toggleWord), keyEquivalent: "")
-            word.target = self
-            word.state = WordAutomation.isEnabled ? .on : .off
-            word.toolTip = L("Word documents are turned into PDFs by Word itself, so they look exactly like printing from Word.")
-            menu.addItem(word)
-        }
 
         if FolderAccess.isSandboxed {
             menu.addItem(.separator())
@@ -175,22 +279,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         help.target = self
         menu.addItem(help)
 
-        let about = NSMenuItem(title: L("About FileFlipper"), action: #selector(showAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: L("About Proteus"), action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: L("Quit FileFlipper"), action: #selector(NSApplication.terminate(_:)),
+        menu.addItem(NSMenuItem(title: L("Quit Proteus"), action: #selector(NSApplication.terminate(_:)),
                                 keyEquivalent: "q"))
     }
 
     @objc private func toggleEnabled() {
         monitor.isEnabled.toggle()
         UserDefaults.standard.set(monitor.isEnabled, forKey: Keys.enabled)
-    }
-
-    @objc private func toggleWord() {
-        WordAutomation.isEnabled.toggle()
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -223,16 +323,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showHelp() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = L("How to use FileFlipper")
+        alert.messageText = L("How to use Proteus")
         var paragraphs = [
-            L("Convert: start dragging a file in Finder, then hold Shift. Round buttons appear in an arc above the pointer. Drop the file on a format and the converted copy is saved next to the original."),
+            L("Convert: drag a file in Finder and hold Shift. Drop it on a format in the ring. The converted copy is saved next to the original."),
             L("Tools: hold Option + Shift while dragging to see tools for that file type (crop, compress, cut out, rotate, merge, split…)."),
             L("Markdown: pick MD to turn Word, PDF, PowerPoint or Excel into Markdown, ready for AI."),
-            L("Changed your mind? Let go below the arc and nothing happens."),
-            L("Everything happens locally on your Mac. FileFlipper lives in the menu bar."),
+            L("To cancel, drop in the centre or outside the ring. You can also choose files and formats from the menu bar using the keyboard."),
+            L("Everything happens locally on your Mac. Proteus lives in the menu bar."),
+            L("For PDFs, DOCX preserves each page as an image. DOCX Text and RTF export editable text without original page layout or pictures."),
         ]
         if FolderAccess.isSandboxed {
-            paragraphs.append(L("The first time you convert a file in a folder, macOS asks you to allow FileFlipper to save there. Choose “Allow Home Folder” to grant access once for all your folders."))
+            paragraphs.append(L("The first time you convert a file in a folder, macOS asks you to allow Proteus to save there. Choose “Allow Home Folder” to grant access once for all your folders."))
         }
         alert.informativeText = paragraphs.joined(separator: "\n\n")
         alert.addButton(withTitle: L("Got It"))

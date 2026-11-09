@@ -11,6 +11,8 @@ struct ZipArchive {
         let localHeaderOffset: Int
     }
 
+    private static let maxEntrySize = 128 * 1024 * 1024
+    private static let maxExpandedSize = 512 * 1024 * 1024
     private let data: Data
     private var entries: [String: Entry] = [:]
 
@@ -27,16 +29,17 @@ struct ZipArchive {
     func data(at path: String) -> Data? {
         guard let entry = entries[path] else { return nil }
         let header = entry.localHeaderOffset
-        guard uint32(at: header) == 0x0403_4b50 else { return nil }
+        guard header >= 0, header + 30 <= data.count, uint32(at: header) == 0x0403_4b50 else { return nil }
         let start = header + 30 + Int(uint16(at: header + 26)) + Int(uint16(at: header + 28))
-        guard start + entry.compressedSize <= data.count else { return nil }
+        guard start <= data.count, entry.compressedSize <= data.count - start else { return nil }
         let compressed = data.subdata(in: start..<(start + entry.compressedSize))
 
         switch entry.method {
         case 0:
-            return compressed
+            return compressed.count == entry.size ? compressed : nil
         case 8:
             guard entry.size > 0 else { return Data() }
+            guard !compressed.isEmpty else { return nil }
             var output = Data(count: entry.size)
             let written = output.withUnsafeMutableBytes { out in
                 compressed.withUnsafeBytes { input in
@@ -61,15 +64,23 @@ struct ZipArchive {
         var position = data.count - minimum
         let lowest = max(0, data.count - 65_557)
         while position >= lowest {
-            if uint32(at: position) == 0x0605_4b50 { end = position; break }
+            if uint32(at: position) == 0x0605_4b50, position + minimum + Int(uint16(at: position + 20)) == data.count { end = position; break }
             position -= 1
         }
         guard end >= 0 else { throw ConversionError.message(L("Not a valid Office file")) }
 
         let count = Int(uint16(at: end + 10))
+        let invalid = ConversionError.message(L("Not a valid Office file"))
+        guard uint16(at: end + 4) == 0, uint16(at: end + 6) == 0,
+              count > 0, count < 65535, Int(uint16(at: end + 8)) == count else { throw invalid }
+        let directorySize = Int(uint32(at: end + 12))
         var offset = Int(uint32(at: end + 16))
+        guard offset <= end, directorySize <= end - offset else { throw invalid }
+        let directoryEnd = offset + directorySize
+        var expanded = 0
         for _ in 0..<count {
-            guard offset + 46 <= data.count, uint32(at: offset) == 0x0201_4b50 else { break }
+            try ConversionWork.check()
+            guard offset + 46 <= directoryEnd, uint32(at: offset) == 0x0201_4b50 else { throw invalid }
             let method = uint16(at: offset + 10)
             let compressedSize = Int(uint32(at: offset + 20))
             let size = Int(uint32(at: offset + 24))
@@ -77,23 +88,33 @@ struct ZipArchive {
             let extraLength = Int(uint16(at: offset + 30))
             let commentLength = Int(uint16(at: offset + 32))
             let localHeader = Int(uint32(at: offset + 42))
+            let recordEnd = offset + 46 + nameLength + extraLength + commentLength
+            guard recordEnd <= directoryEnd, nameLength > 0,
+                  size <= Self.maxEntrySize, expanded <= Self.maxExpandedSize - size,
+                  localHeader + 30 <= data.count,
+                  uint32(at: localHeader) == 0x0403_4b50,
+                  uint16(at: offset + 8) & 1 == 0, method == 0 || method == 8 else { throw invalid }
+            let payload = localHeader + 30 + Int(uint16(at: localHeader + 26)) + Int(uint16(at: localHeader + 28))
+            guard payload <= data.count, compressedSize <= data.count - payload else { throw invalid }
+            expanded += size
             let nameData = data.subdata(in: (offset + 46)..<(offset + 46 + nameLength))
-            if let name = String(data: nameData, encoding: .utf8) {
+            if let name = String(data: nameData, encoding: .utf8), entries[name] == nil {
                 entries[name] = Entry(method: method, compressedSize: compressedSize, size: size,
                                       localHeaderOffset: localHeader)
             }
-            offset += 46 + nameLength + extraLength + commentLength
+            else { throw invalid }
+            offset = recordEnd
         }
         guard !entries.isEmpty else { throw ConversionError.message(L("Not a valid Office file")) }
     }
 
     private func uint16(at offset: Int) -> UInt16 {
-        guard offset + 2 <= data.count else { return 0 }
+        guard offset >= 0, offset + 2 <= data.count else { return 0 }
         return UInt16(data[data.startIndex + offset]) | UInt16(data[data.startIndex + offset + 1]) << 8
     }
 
     private func uint32(at offset: Int) -> UInt32 {
-        guard offset + 4 <= data.count else { return 0 }
+        guard offset >= 0, offset + 4 <= data.count else { return 0 }
         var value: UInt32 = 0
         for index in 0..<4 {
             value |= UInt32(data[data.startIndex + offset + index]) << (8 * index)

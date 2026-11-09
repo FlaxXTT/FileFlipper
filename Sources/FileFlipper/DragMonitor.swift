@@ -9,7 +9,12 @@ import AppKit
 ///  - the system drag pasteboard's `changeCount` changes when a new drag starts
 ///  - `NSEvent.modifierFlags` gives the currently held modifier keys
 final class DragMonitor {
-    var isEnabled = true
+    var isEnabled = true {
+        didSet {
+            guard oldValue != isEnabled else { return }
+            if isEnabled { start() } else { stop() }
+        }
+    }
 
     /// Called when the picker should appear: cursor location (screen coords), dragged files, tools mode.
     var onShow: ((NSPoint, [URL], Bool) -> Void)?
@@ -30,9 +35,10 @@ final class DragMonitor {
 
     func start() {
         stop()
+        guard isEnabled else { return }
         if activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                options: [.userInitiatedAllowingIdleSystemSleep],
                 reason: "Watching for file drags")
         }
         mouseWasDown = false
@@ -49,6 +55,9 @@ final class DragMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
+        if pickerShown { pickerShown = false; onEnd?() }
+        mouseWasDown = false
     }
 
     /// Starts over with a fresh timer, e.g. after the Mac wakes from sleep.

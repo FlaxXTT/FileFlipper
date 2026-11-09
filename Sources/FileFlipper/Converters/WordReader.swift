@@ -19,6 +19,7 @@ enum WordReader {
         let builder = Builder(archive: archive)
         if let section = body.child("sectPr") { builder.readPageSetup(section) }
         builder.blocks(in: body, cell: nil)
+        try ConversionWork.check()
         builder.finish()
         return (builder.output, builder.page)
     }
@@ -330,6 +331,7 @@ enum WordReader {
 
         func blocks(in container: XMLElement, cell: NSTextTableBlock?) {
             for case let element as XMLElement in container.children ?? [] {
+                if Task.isCancelled { return }
                 switch element.localName {
                 case "p": paragraph(element, cell: cell)
                 case "tbl": table(element, outer: cell)
@@ -363,7 +365,7 @@ enum WordReader {
             // Numbering: the level's indents sit between the style and the paragraph's own.
             var marker: (text: String, run: RunProps)?
             if let numID = para.numID, numID != "0", let levels = numberingLevels[numID] {
-                let levelIndex = para.level ?? 0
+                let levelIndex = max(0, min(8, para.level ?? 0))
                 if let level = levels[levelIndex] {
                     var merged = defaults.para
                     for style in chain { merged.apply(style.para) }
@@ -452,6 +454,7 @@ enum WordReader {
 
         private func runs(in container: XMLElement, base: RunProps, paragraph: NSParagraphStyle, link: URL?) {
             for case let node as XMLElement in container.children ?? [] {
+                if Task.isCancelled { return }
                 switch node.localName {
                 case "r":
                     var run = base
@@ -585,11 +588,11 @@ enum WordReader {
                 var column = 0
                 for tc in tr.children("tc") {
                     let tcPr = tc.child("tcPr")
-                    let span = tcPr?.child("gridSpan")?.attr("val").flatMap(Int.init) ?? 1
+                    let span = max(1, min(16384, tcPr?.child("gridSpan")?.attr("val").flatMap(Int.init) ?? 1))
                     let block = NSTextTableBlock(table: table, startingRow: rowIndex, rowSpan: 1,
                                                  startingColumn: min(column, table.numberOfColumns - 1),
                                                  columnSpan: max(1, min(span, table.numberOfColumns - column)))
-                    let width = (column..<min(column + span, columns.count)).reduce(CGFloat(0)) { $0 + columns[$1] }
+                    let width = (min(column, columns.count)..<min(column + span, columns.count)).reduce(CGFloat(0)) { $0 + columns[$1] }
                     if width > 0 { block.setValue(width, type: .absoluteValueType, for: .width) }
                     block.setWidth(5.4, type: .absoluteValueType, for: .padding, edge: .minX)
                     block.setWidth(5.4, type: .absoluteValueType, for: .padding, edge: .maxX)
